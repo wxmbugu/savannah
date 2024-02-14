@@ -86,12 +86,6 @@ All authenticated routes are under the /v1 prefix and require authentication thr
     Method: GET, OPTIONS
     Description: Retrieves item details based on the provided id.
 
-3. Additional Information
-3.1 Routes Information
-
-    URI: /api/v1/routes/{stopId}[/{type}/]
-    Method: GET
-    Description: Retrieves a list of routes that stop at a specific stop. The optional type parameter controls whether this returns the full route info or just a list of short names.
 ```
 
 
