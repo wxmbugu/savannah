@@ -9,25 +9,21 @@ import (
 	"os/signal"
 	"savannah"
 	"time"
-
-	"github.com/joho/godotenv"
 )
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
 	var wait time.Duration
 	cfg := savannah.LoadConfig()
+	fmt.Println(cfg)
 	server := savannah.NewServer(*cfg)
 	srve := http.Server{
-		Addr:         server.ServerAddress,
+		Addr:         fmt.Sprintf("0.0.0.0:%s", cfg.Port),
 		Handler:      server.Router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	fmt.Println(srve.Addr)
+	fmt.Println("serving on port:", cfg.Port)
+	fmt.Println(cfg)
 	go func() {
 		if err := srve.ListenAndServe(); err != nil {
 			log.Println(err)

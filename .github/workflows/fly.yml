@@ -1,0 +1,24 @@
+name: Fly Deploy
+on:
+  push:
+    branches:
+      - main
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+jobs:
+  deploy:
+    name: Deploy app
+    runs-on: ubuntu-latest
+    concurrency: deploy-group   
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Fly Deploy
+        run: flyctl deploy --remote-only
+      - name: Set Secrets
+        run: flyctl secrets set  ATALKINGAPI=${{ secrets.ATALKINGAPI }} AUSERNAME=${{ secrets.AUSERNAME }} CLIENTID=${{ secrets.CLIENTID }} CLIENTSECRET=${{ secrets.CLIENTSECRET }} DBURL=${{ secrets.DBURL }}
+
+

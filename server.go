@@ -22,14 +22,13 @@ import (
 )
 
 type Server struct {
-	Services      Service
-	Router        *mux.Router
-	oathConfig    *oauth2.Config
-	provider      *oidc.Provider
-	ctx           context.Context
-	Cfg           *Config
-	ServerAddress string
-	validator     *validator.Validate
+	Services   Service
+	Router     *mux.Router
+	oathConfig *oauth2.Config
+	provider   *oidc.Provider
+	ctx        context.Context
+	Cfg        *Config
+	validator  *validator.Validate
 }
 
 func randString(nByte int) (string, error) {
@@ -82,14 +81,13 @@ func NewServer(cfg Config) *Server {
 	validate := validator.New()
 	services := NewService(conn, cfg.AUsername, cfg.AtalkingAPI)
 	server := Server{
-		Router:        mux,
-		Services:      services,
-		oathConfig:    &config,
-		provider:      provider,
-		ctx:           ctx,
-		ServerAddress: cfg.ServerAddress,
-		Cfg:           &cfg,
-		validator:     validate,
+		Router:     mux,
+		Services:   services,
+		oathConfig: &config,
+		provider:   provider,
+		ctx:        ctx,
+		Cfg:        &cfg,
+		validator:  validate,
 	}
 
 	server.Routes()
