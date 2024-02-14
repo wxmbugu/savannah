@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-playground/validator"
 	"github.com/gorilla/mux"
 	"golang.org/x/oauth2"
 )
@@ -26,17 +27,10 @@ type Server struct {
 	oathConfig    *oauth2.Config
 	provider      *oidc.Provider
 	ctx           context.Context
+	Cfg           *Config
 	ServerAddress string
+	validator     *validator.Validate
 }
-
-var (
-	clientID      = "387480342800-7o0qjebp71dkqakq4uju6kj885b9t194.apps.googleusercontent.com"
-	clientSecret  = "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"
-	dbURL         = "postgresql://postgres:secret@localhost:5432/savannah?sslmode=disable"
-	accProvider   = "https://accounts.google.com"
-	redirectURL   = "http://127.0.0.1:9000/auth/google/callback"
-	serverAddress = "localhost:9000"
-)
 
 func randString(nByte int) (string, error) {
 	b := make([]byte, nByte)
@@ -68,32 +62,34 @@ func SetupDb(conn string) *sql.DB {
 	return db
 }
 
-func NewServer() *Server {
+func NewServer(cfg Config) *Server {
 
 	ctx := context.Background()
 	mux := mux.NewRouter()
 
-	conn := SetupDb(dbURL)
-	provider, err := oidc.NewProvider(ctx, accProvider)
+	conn := SetupDb(cfg.DBURL)
+	provider, err := oidc.NewProvider(ctx, cfg.AccProvider)
 	if err != nil {
 		log.Fatal(err)
 	}
 	config := oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
 		Endpoint:     provider.Endpoint(),
-		RedirectURL:  redirectURL,
+		RedirectURL:  cfg.RedirectURL,
 		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 	}
-
-	services := NewService(conn)
+	validate := validator.New()
+	services := NewService(conn, cfg.AUsername, cfg.AtalkingAPI)
 	server := Server{
 		Router:        mux,
 		Services:      services,
 		oathConfig:    &config,
 		provider:      provider,
 		ctx:           ctx,
-		ServerAddress: serverAddress,
+		ServerAddress: cfg.ServerAddress,
+		Cfg:           &cfg,
+		validator:     validate,
 	}
 
 	server.Routes()
@@ -104,7 +100,7 @@ func (server *Server) Routes() {
 	http.Handle("/", server.Router)
 	server.Router.Use(corsmiddleware)
 	server.Router.Use(jsonmiddleware)
-	server.Router.HandleFunc("/", server.setCallbackCookie).Methods("GET", "OPTIONS")
+	server.Router.HandleFunc("/login", server.setCallbackCookie).Methods("GET", "OPTIONS")
 	server.Router.HandleFunc("/auth/google/callback", server.googleCallback).Methods("GET", "OPTIONS")
 	authroutes := server.Router.PathPrefix("/v1").Subrouter()
 	authroutes.Use(server.authmiddleware)
@@ -118,12 +114,12 @@ func (server *Server) Routes() {
 func (server *Server) setCallbackCookie(w http.ResponseWriter, r *http.Request) {
 	state, err := randString(16)
 	if err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
 	nonce, err := randString(16)
 	if err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
 	setCallbackCookie(w, r, "state", state)
@@ -135,26 +131,26 @@ func (server *Server) setCallbackCookie(w http.ResponseWriter, r *http.Request) 
 func (server *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	state, err := r.Cookie("state")
 	if err != nil {
-		http.Error(w, "state not found", http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": "state not found"})
 		return
 	}
 	if r.URL.Query().Get("state") != state.Value {
-		http.Error(w, "state did not match", http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": "state did not match"})
 		return
 	}
 
 	oauth2Token, err := server.oathConfig.Exchange(server.ctx, r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
 	userInfo, err := server.provider.UserInfo(server.ctx, oauth2.StaticTokenSource(oauth2Token))
 	if err != nil {
-		http.Error(w, "Failed to get userinfo: "+err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
 	user, err := server.Services.service.FindUserbyEmail(userInfo.Email)
@@ -170,7 +166,7 @@ func (server *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, err = server.provider.Verifier(&oidc.Config{ClientID: clientID}).Verify(r.Context(), oauth2Token.Extra("id_token").(string))
+	_, err = server.provider.Verifier(&oidc.Config{ClientID: server.Cfg.ClientID}).Verify(r.Context(), oauth2Token.Extra("id_token").(string))
 	if err != nil {
 		serializeResponse(w, http.StatusUnauthorized, Errorjson{"error": err.Error()})
 		return
@@ -179,64 +175,65 @@ func (server *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		Access_Token string `json:"access_token"`
 		User         *User  `json:"user"`
 	}{oauth2Token.Extra("id_token").(string), user}
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	serializeResponse(w, http.StatusOK, response)
 }
 
 func (server *Server) createCustomer(w http.ResponseWriter, r *http.Request) {
 	var customer User
 	err := json.NewDecoder(r.Body).Decode(&customer)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": err.Error()})
 		return
 	}
-
+	if err := server.validator.Struct(customer); err != nil {
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": err.Error()})
+		return
+	}
 	createdCustomer, err := server.Services.service.CreateUser(customer)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(createdCustomer)
+	serializeResponse(w, http.StatusCreated, createdCustomer)
 }
 
 func (server *Server) getCustomer(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	idStr := params["id"]
-	v := w.Header().Get("Authorization")
-	fmt.Println("token", v)
 
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": "Invalid ID"})
 		return
 	}
 
 	customer, err := server.Services.service.FindUser(id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "Customer not found", http.StatusNotFound)
+			serializeResponse(w, http.StatusNotFound, Errorjson{"error": "Customer not found"})
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(customer)
+	serializeResponse(w, http.StatusOK, customer)
 }
 
 func (server *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 	claims, ok := r.Context().Value("claims").(*Claims)
 	if !ok {
-		http.Error(w, "Claims not found in context", http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": "Claims not found in context"})
 		return
 	}
 	var order Orders
 	err := json.NewDecoder(r.Body).Decode(&order)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": err.Error()})
+		return
+	}
+
+	if err := server.validator.Struct(order); err != nil {
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": err.Error()})
 		return
 	}
 	user, err := server.Services.service.FindUserbyEmail(claims.Email)
@@ -253,12 +250,22 @@ func (server *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 	order.UserId = user.ID
 	createdOrder, err := server.Services.service.CreateOrders(order)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(createdOrder)
+	item, err := server.Services.service.FindItem(order.ItemID)
+	if err != nil {
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
+		return
+	}
+
+	orderConfirmationMessage := fmt.Sprintf("Thank you for your order! You've successfully created an order for %s. You ordered %d %s(s), totaling an amount of $%.2f. We appreciate your business!", item.Name, order.Qty, item.Name, item.Price*float32(order.Qty))
+	err = server.Services.sms.Send(order.Contact, orderConfirmationMessage)
+	if err != nil {
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
+		return
+	}
+	serializeResponse(w, http.StatusCreated, createdOrder)
 }
 
 func (server *Server) getOrder(w http.ResponseWriter, r *http.Request) {
@@ -266,21 +273,19 @@ func (server *Server) getOrder(w http.ResponseWriter, r *http.Request) {
 	idStr := params["id"]
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": "Invalid ID"})
 		return
 	}
 	order, err := server.Services.service.FindOrders(id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "Order not found", http.StatusNotFound)
+			serializeResponse(w, http.StatusNotFound, "Order not found")
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(order)
+	serializeResponse(w, http.StatusOK, order)
 }
 
 func (server *Server) getItem(w http.ResponseWriter, r *http.Request) {
@@ -288,21 +293,19 @@ func (server *Server) getItem(w http.ResponseWriter, r *http.Request) {
 	idStr := params["id"]
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		serializeResponse(w, http.StatusBadRequest, Errorjson{"error": "Invalid ID"})
 		return
 	}
 	item, err := server.Services.service.FindItem(id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			http.Error(w, "Order not found", http.StatusNotFound)
+			serializeResponse(w, http.StatusNotFound, "Item not found")
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(item)
+	serializeResponse(w, http.StatusOK, item)
 }
 func corsmiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +325,7 @@ func corsmiddleware(next http.Handler) http.Handler {
 const (
 	authHeaderKey = "authorization"
 	token         = "token"
-	claims        = "claims"
+	claimsKey     = "claims"
 )
 
 func serializeResponse(w http.ResponseWriter, statuscode int, data interface{}) {
@@ -351,7 +354,7 @@ func (server *Server) authmiddleware(next http.Handler) http.Handler {
 			return
 		}
 		reqtoken = tokenvalue[1]
-		verifier := server.provider.Verifier(&oidc.Config{ClientID: clientID})
+		verifier := server.provider.Verifier(&oidc.Config{ClientID: server.Cfg.ClientID})
 		idToken, err := verifier.Verify(r.Context(), reqtoken)
 		if err != nil {
 			serializeResponse(w, http.StatusUnauthorized, Errorjson{"error": err.Error()})
@@ -360,9 +363,9 @@ func (server *Server) authmiddleware(next http.Handler) http.Handler {
 		var claims Claims
 		err = idToken.Claims(&claims)
 		if err != nil {
-			fmt.Println(err)
+			serializeResponse(w, http.StatusInternalServerError, Errorjson{"error": err.Error()})
 		}
-		ctx := context.WithValue(r.Context(), claims, &claims)
+		ctx := context.WithValue(r.Context(), claimsKey, &claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

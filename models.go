@@ -17,11 +17,12 @@ type (
 		Description string  `json:"description" validate:"required"`
 	}
 	Orders struct {
-		ID     int       `json:"id"`
-		UserId int       `json:"user_id"`
-		ItemID int       `json:"item_id"  validate:"required"`
-		Qty    int       `json:"qty" validate:"required"`
-		Time   time.Time `json:"time" `
+		ID      int       `json:"id"`
+		Contact string    `json:"contact" validate:"required"`
+		UserId  int       `json:"user_id"`
+		ItemID  int       `json:"item_id"  validate:"required"`
+		Qty     int       `json:"qty" validate:"required"`
+		Time    time.Time `json:"time" `
 	}
 	database interface {
 		CreateUser(user User) (*User, error)
