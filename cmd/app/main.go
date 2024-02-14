@@ -23,7 +23,6 @@ func main() {
 		WriteTimeout: 30 * time.Second,
 	}
 	fmt.Println("serving on port:", cfg.Port)
-	fmt.Println(cfg)
 	go func() {
 		if err := srve.ListenAndServe(); err != nil {
 			log.Println(err)
